@@ -1,0 +1,139 @@
+---
+title: "Desempenho da Carteira"
+author: "Prof. Guilherme Kirch"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    latex_engine: xelatex
+  html_document:
+    df_print: paged
+params:
+  disc: 'ADM01140'
+  year: 2018
+  semester: 1
+  class: 'C'
+  file: '00261235.csv'
+  first.date: !r as.Date('2018-03-20')
+  last.date: !r Sys.Date()
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r, include=FALSE}
+library(BatchGetSymbols)
+library(dplyr)
+library(stringr)
+
+portfolio <- read.csv(file = paste0('./', params$disc, '_', params$year,
+                                    '_', params$semester, '_Turma', params$class,
+                                    '/', params$file))
+id.names  <- read.csv(file = paste0('./', params$disc, '_', params$year,
+                                    '_', params$semester, '_Turma', params$class,
+                                    '/names.csv'),
+                      colClasses = c('character', 'character'))
+
+if (sum(portfolio$peso)!=1) {
+  stop('ERROR: Portfolio weights must sum to one!')
+}
+
+tickers <- paste0(portfolio$ticker, '.SA')
+prices <- BatchGetSymbols(tickers = tickers,
+                          first.date = params$first.date,
+                          last.date = params$last.date,
+                          bench.ticker = '^BVSP')[[2]]
+
+if (nrow(prices %>% group_by(ticker) %>% summarise()) != nrow(portfolio)) {
+  stop('ERROR: We could not retrieve data from all tickers.')
+}
+
+if (nrow(prices %>% filter(ref.date==min(ref.date, na.rm = TRUE))) != nrow(portfolio)) {
+  stop('ERROR: Not all shares have prices in the initial date.')
+}
+
+if (nrow(prices %>% filter(ref.date==max(ref.date, na.rm = TRUE))) != nrow(portfolio)) {
+  stop('ERROR: Not all shares have prices in the final date.')
+}
+
+quantities <- prices %>%
+  filter(ref.date==min(ref.date, na.rm = TRUE)) %>%
+  mutate(ticker = as.factor(str_replace_all(ticker, fixed('.SA'), ''))) %>%
+  inner_join(portfolio, by = 'ticker') %>%
+  mutate(quantity = 100*peso/price.adjusted) %>%
+  select(ticker, quantity)
+
+returns <- prices %>%
+  mutate(ticker = as.factor(str_replace_all(ticker, fixed('.SA'), ''))) %>%
+  inner_join(quantities, by = 'ticker') %>%
+  mutate(value = price.adjusted*quantity) %>%
+  group_by(ref.date) %>%
+  summarise(value = sum(value, na.rm = TRUE))
+
+returns$return <- returns$value/lag(returns$value) - 1
+returns$ativo  <- 'Carteira'
+
+ibov <- BatchGetSymbols(tickers = '^BVSP',
+                        first.date = params$first.date,
+                        last.date = params$last.date)[[2]]
+
+ibov$value  <- ibov$price.adjusted/ibov$price.adjusted[1]*100
+ibov$return <- ibov$value/lag(ibov$value) - 1
+ibov$ativo  <- 'Ibovespa'
+
+returns <- rbind(returns, select(ibov, ref.date, value, return, ativo))
+
+returns.summary <- returns %>%
+  group_by(ativo) %>%
+  summarise(from = ref.date[which.min(ref.date)],
+            to = ref.date[which.max(ref.date)],
+            from.price = value[which.min(ref.date)],
+            to.price = value[which.max(ref.date)],
+            std.dev = sd(return, na.rm = TRUE),
+            days = length(return[!is.na(return)])) %>%
+  mutate(return = to.price/from.price-1,
+         std.dev = std.dev*sqrt(days),
+         coef.var = return/std.dev)
+
+portfolio.summary <- prices %>%
+  mutate(ticker = as.factor(str_replace_all(ticker, fixed('.SA'), ''))) %>%
+  group_by(ticker) %>%
+  summarise(from = ref.date[which.min(ref.date)],
+            to = ref.date[which.max(ref.date)],
+            from.price = price.adjusted[which.min(ref.date)],
+            to.price = price.adjusted[which.max(ref.date)],
+            std.dev = sd(ret.adjusted.prices, na.rm = TRUE),
+            days = length(ret.adjusted.prices[!is.na(ret.adjusted.prices)])) %>%
+  mutate(return = to.price/from.price-1,
+         std.dev = std.dev*sqrt(days),
+         coef.var = return/std.dev) %>%
+  inner_join(portfolio, by = 'ticker')
+```
+
+Investidor: `r id.names[id.names$ID == str_replace(params$file, fixed('.csv'), ''), 'Name']` (`r str_replace(params$file, fixed('.csv'), '')`)
+
+__*Desempenho da Carteira x IBOVESPA*__
+
+Sua carteira é composta por `r nrow(portfolio)` ativos (ações). A carteira do IBOVESPA é composta por mais de 60 ativos. Na Tabela 1 e Figura 1 abaixo você pode acompanhar o desempenho da sua carteira e comparar com a carteira do IBOVESPA.
+
+```{r}
+knitr::kable(select(returns.summary, ativo, from, to, days, from.price, to.price,
+                    return, std.dev, coef.var),
+             caption = 'Summary of Performance')
+
+library(ggplot2)
+g <- ggplot(data = returns, aes(x=ref.date, y=value, colour=ativo))
+g <- g + geom_line()
+g <- g + scale_colour_manual(values=c("red","green"))
+g <- g + xlab('Data') + ylab('Valor') + labs(colour = 'Ativo')
+g <- g + labs(subtitle = 'Figure 1: Carteira x IBOVESPA')
+print(g)
+```
+
+A performance dos ativos (ações) individuais pode ser consultada na Tabela 2.
+
+```{r}
+knitr::kable(select(portfolio.summary, ticker, from, to, days, from.price, to.price,
+                    return, peso, std.dev),
+             caption = 'Individual Performance')
+```

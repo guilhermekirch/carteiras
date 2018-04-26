@@ -1,0 +1,156 @@
+---
+title: "Desempenho das Carteiras"
+author: "Prof. Guilherme Kirch"
+date: "`r Sys.Date()`"
+output: html_document
+runtime: shiny
+params:
+  disc: 'ADM01140'
+  year: 2018
+  semester: 1
+  class: 'C'
+  first.date: !r as.Date('2018-03-20')
+  last.date: !r Sys.Date()
+  last.days: 22
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r, include=FALSE}
+library(BatchGetSymbols)
+library(dplyr)
+library(stringr)
+
+id.names  <- read.csv(file = paste0('./', params$disc, '_', params$year,
+                                    '_', params$semester, '_Turma', params$class,
+                                    '/names.csv'),
+                      colClasses = c('character', 'character'))
+
+df.portfolios <- data.frame(stringsAsFactors = FALSE)
+for (f in list.files(path = paste0('./', params$disc, '_', params$year,
+                                    '_', params$semester, '_Turma', params$class),
+                     pattern = '^[0-9].*\\.csv$')) {
+  portfolio <- read.csv(file = paste0('./', params$disc, '_', params$year,
+                                    '_', params$semester, '_Turma', params$class,
+                                    '/', f))
+  if (sum(portfolio$peso)!=1) {
+    stop('ERROR: Portfolio weights must sum to one!')
+  }
+  df.portfolios <- rbind(df.portfolios,
+                         data.frame(ID = str_replace(f, fixed('.csv'), ''),
+                                    ticker = as.character(portfolio$ticker),
+                                    peso = portfolio$peso,
+                                    stringsAsFactors = FALSE))
+}
+
+df.tickers <- df.portfolios %>%
+  group_by(ticker) %>%
+  summarise(N = n())
+
+prices <- BatchGetSymbols(tickers = paste0(df.tickers$ticker, '.SA'),
+                          first.date = params$first.date,
+                          last.date = params$last.date,
+                          bench.ticker = '^BVSP',
+                          thresh.bad.data = 0.5)[[2]]
+prices$ticker <- str_replace_all(prices$ticker, fixed('.SA'), '')
+
+if (nrow(prices %>% group_by(ticker) %>% summarise()) != nrow(df.tickers)) {
+  stop('ERROR: We could not retrieve data from all tickers.')
+}
+
+if (nrow(prices %>% filter(ref.date==min(ref.date, na.rm = TRUE))) != nrow(df.tickers)) {
+  stop('ERROR: Not all shares have prices in the initial date.')
+}
+
+if (nrow(prices %>% filter(ref.date==max(ref.date, na.rm = TRUE))) != nrow(df.tickers)) {
+  stop('ERROR: Not all shares have prices in the final date.')
+}
+
+quantities <- prices %>%
+  filter(ref.date==min(ref.date, na.rm = TRUE)) %>%
+  inner_join(df.portfolios, by = 'ticker') %>%
+  mutate(quantity = 100*peso/price.adjusted) %>%
+  select(ID, ticker, quantity)
+
+df.returns <- prices %>%
+  inner_join(quantities, by = 'ticker') %>%
+  mutate(value = price.adjusted*quantity) %>%
+  group_by(ID, ref.date) %>%
+  summarise(value = sum(value, na.rm = TRUE)) %>%
+  group_by(ID) %>%
+  mutate(return = value/lag(value)-1) %>%
+  summarise(from = min(ref.date, na.rm = TRUE),
+            to = max(ref.date, na.rm = TRUE),
+            days = length(return[!is.na(return)]),
+            from.price = value[which.min(ref.date)],
+            from.price2 = value[n()-params$last.days+1],
+            to.price = value[which.max(ref.date)],
+            std.dev = sd(return, na.rm = TRUE)) %>%
+  mutate(return = to.price/from.price - 1,
+         return.ldays = to.price/from.price2 - 1,
+         std.dev = std.dev*sqrt(days),
+         coef.var = return/std.dev) %>%
+  inner_join(df.portfolios %>% group_by(ID) %>% summarise(N = n()), by = 'ID') %>%
+  inner_join(id.names, by = 'ID')
+
+df.tickers.prices <- prices %>%
+  group_by(ticker) %>%
+  summarise(from = ref.date[which.min(ref.date)],
+            to = ref.date[which.max(ref.date)],
+            days = length(ret.adjusted.prices[!is.na(ret.adjusted.prices)]),
+            from.price = price.adjusted[which.min(ref.date)],
+            from.price2 = price.adjusted[n()-params$last.days+1],
+            to.price = price.adjusted[which.max(ref.date)],
+            std.dev = sd(ret.adjusted.prices, na.rm = TRUE)) %>%
+  mutate(return = to.price/from.price - 1,
+         return.ldays = to.price/from.price2 - 1,
+         std.dev = std.dev*sqrt(days),
+         coef.var = return/std.dev) %>%
+  inner_join(df.tickers, by = 'ticker')
+
+ibov <- BatchGetSymbols(tickers = '^BVSP',
+                        first.date = params$first.date,
+                        last.date = params$last.date)[[2]]
+
+df.ibov.returns <- ibov %>%
+  group_by(ticker) %>%
+  summarise(from = ref.date[which.min(ref.date)],
+            to = ref.date[which.max(ref.date)],
+            days = length(ret.adjusted.prices[!is.na(ret.adjusted.prices)]),
+            from.price = price.adjusted[which.min(ref.date)],
+            from.price2 = price.adjusted[n()-params$last.days+1],
+            to.price = price.adjusted[which.max(ref.date)],
+            std.dev = sd(ret.adjusted.prices, na.rm = TRUE)) %>%
+  mutate(return = to.price/from.price - 1,
+         return.ldays = to.price/from.price2 - 1,
+         std.dev = std.dev*sqrt(days),
+         coef.var = return/std.dev)
+```
+
+Nesta página são apresentadas informações sobre o desempenho de cada carteira formada pelos integrantes da turma de `r params$disc`: Ano `r params$year`, Semestre `r params$semester`, Turma `r params$class`. A performance foi medida no período de `r df.ibov.returns$from` até `r df.ibov.returns$to`, totalizando `r df.ibov.returns$days` dias (úteis). A coluna *return.ldays* mede o retorno nos últimos `r params$last.days` dias úteis. Para fins de comparação, são apresentadas inicialmente informações sobre a performance do IBOVESPA.
+
+```{r}
+knitr::kable(select(df.ibov.returns, from.price, to.price, return,
+                    return.ldays, std.dev, coef.var),
+             caption = 'Benchmark: IBOVESPA')
+```
+
+__*Carteiras da Turma*__
+
+Na tabela abaixo *N* é o número de ativos (ações) na carteira.
+
+```{r}
+renderDataTable(select(df.returns, ID, Name, N, return, return.ldays,
+                       std.dev, coef.var))
+```
+
+__*Ativos Selecionados*__
+
+Na tabela abaixo são listadas as ações que compõe as carteiras. A coluna *N* indica o número de carteiras que contém a respectivo ação.
+
+```{r}
+renderDataTable(select(df.tickers.prices, ticker, N, from, to, days, from.price,
+                       to.price, return, std.dev))
+```
